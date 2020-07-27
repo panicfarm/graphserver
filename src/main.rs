@@ -6,7 +6,7 @@ use {
         Body, Server,
     },
     std::boxed::Box,
-    std::future::Future,
+    std::future,
     std::net::SocketAddr,
     std::pin::Pin,
     std::task::{Context, Poll},
@@ -17,7 +17,7 @@ struct HelloWorld;
 impl Service<Request<Vec<u8>>> for HelloWorld {
     type Response = Response<Vec<u8>>;
     type Error = hyper::http::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+    type Future = Pin<Box<dyn future::Future<Output = Result<Self::Response, Self::Error>>>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -41,10 +41,20 @@ impl Service<Request<Vec<u8>>> for HelloWorld {
     }
 }
 
-impl Service<AddrStream> for HelloWorld {
-    type Response = Response<Vec<u8>>;
-    type Error = hyper::http::Error;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+pub struct MakeSvc;
+
+impl<T> Service<T> for MakeSvc {
+    type Response = HelloWorld;
+    type Error = std::io::Error;
+    type Future = dyn future::Future<Output = Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        Ok(()).into()
+    }
+
+    fn call(&mut self, _: T) -> Self::Future {
+        future::Future::Ready(HelloWorld)
+    }
 }
 
 #[tokio::main]
@@ -52,7 +62,7 @@ async fn main() {
     let addr = SocketAddr::from(([208, 93, 231, 240], 3000));
     let srv = HelloWorld {};
     // Create a server bound on the provided address
-    let serve_future = Server::bind(&addr).serve(srv);
+    let serve_future = Server::bind(&addr).serve(MakeSvc);
 
     // Wait for the server to complete serving or exit with an error.
     // If an error occurred, print it to stderr.

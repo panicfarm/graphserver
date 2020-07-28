@@ -1,72 +1,76 @@
-use {
-    hyper::{
-        http::{Request, Response, StatusCode},
-        server::conn::AddrStream,
-        service::Service,
-        Body, Server,
-    },
-    std::boxed::Box,
-    std::future,
-    std::net::SocketAddr,
-    std::pin::Pin,
-    std::task::{Context, Poll},
-};
+use hyper::service::Service;
+use hyper::{Body, Request, Response, Server};
 
-struct HelloWorld;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
-impl Service<Request<Vec<u8>>> for HelloWorld {
-    type Response = Response<Vec<u8>>;
-    type Error = hyper::http::Error;
-    type Future = Pin<Box<dyn future::Future<Output = Result<Self::Response, Self::Error>>>>;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn call(&mut self, req: Request<Vec<u8>>) -> Self::Future {
-        // create the body
-        let body: Vec<u8> = "hello, world!\n".as_bytes().to_owned();
-        // Create the HTTP response
-        let resp = Response::builder()
-            .status(StatusCode::OK)
-            .body(body)
-            .expect("Unable to create `http::Response`");
-
-        // create a response in a future.
-        let fut = async { Ok(resp) };
-
-        // Return the response as an immediate future
-        //Call let res = task::spawn_blocking(move || { graph.edges()
-        Box::pin(fut)
-    }
-}
-
-pub struct MakeSvc;
-
-impl<T> Service<T> for MakeSvc {
-    type Response = HelloWorld;
-    type Error = std::io::Error;
-    type Future = dyn future::Future<Output = Result<Self::Response, Self::Error>>;
-
-    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Ok(()).into()
-    }
-
-    fn call(&mut self, _: T) -> Self::Future {
-        future::Future::Ready(HelloWorld)
-    }
-}
+type Counter = i32;
 
 #[tokio::main]
-async fn main() {
-    let addr = SocketAddr::from(([208, 93, 231, 240], 3000));
-    let srv = HelloWorld {};
-    // Create a server bound on the provided address
-    let serve_future = Server::bind(&addr).serve(MakeSvc);
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+  let addr = ([208, 93, 231, 240], 3001).into();
 
-    // Wait for the server to complete serving or exit with an error.
-    // If an error occurred, print it to stderr.
-    if let Err(e) = serve_future.await {
-        eprintln!("server error: {}", e);
+  let server = Server::bind(&addr).serve(MakeSvc { counter: 81818 });
+  println!("Listening on http://{}", addr);
+
+  server.await?;
+  Ok(())
+}
+
+struct Svc {
+  counter: Counter,
+}
+
+impl Service<Request<Body>> for Svc {
+  type Response = Response<Body>;
+  type Error = hyper::Error;
+  type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+  fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
+    Poll::Ready(Ok(()))
+  }
+
+  fn call(&mut self, req: Request<Body>) -> Self::Future {
+    fn mk_response(s: String) -> Result<Response<Body>, hyper::Error> {
+      Ok(Response::builder().body(Body::from(s)).unwrap())
     }
+
+    let res = match req.uri().path() {
+      "/" => mk_response(format!("home! counter = {:?}", self.counter)),
+      "/posts" => mk_response(format!("posts, of course! counter = {:?}", self.counter)),
+      "/authors" => mk_response(format!(
+        "authors extraordinare! counter = {:?}",
+        self.counter
+      )),
+      // Return the 404 Not Found for other routes, and don't increment counter.
+      _ => return Box::pin(async { mk_response("oh no! not found".into()) }),
+    };
+
+    if req.uri().path() != "/favicon.ico" {
+      self.counter += 1;
+    }
+
+    Box::pin(async { res })
+  }
+}
+
+struct MakeSvc {
+  counter: Counter,
+}
+
+impl<T> Service<T> for MakeSvc {
+  type Response = Svc;
+  type Error = hyper::Error;
+  type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+  fn poll_ready(&mut self, _: &mut Context) -> Poll<Result<(), Self::Error>> {
+    Poll::Ready(Ok(()))
+  }
+
+  fn call(&mut self, _: T) -> Self::Future {
+    let counter = self.counter.clone();
+    let fut = async move { Ok(Svc { counter }) };
+    Box::pin(fut)
+  }
 }

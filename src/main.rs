@@ -1,9 +1,17 @@
 use hyper::service::Service;
 use hyper::{Body, Request, Response, Server};
 
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use {
+  chaindata::db::{ClGraphAdapter, Db},
+  serde::{Deserialize, Serialize},
+  std::{
+    future::Future,
+    path::PathBuf,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+  },
+};
 
 type Counter = i32;
 
@@ -11,15 +19,31 @@ type Counter = i32;
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
   let addr = ([208, 93, 231, 240], 3001).into();
 
-  let server = Server::bind(&addr).serve(MakeSvc { counter: 81818 });
+  let db_path = "/home/alecm/clustering/lmdb.100000";
+  let dp = PathBuf::from(db_path);
+  let db = Db::new(&dp, 100_000_000_000, false).unwrap();
+  let db = Arc::new(db);
+
+  let server = Server::bind(&addr).serve(MakeSvc {
+    counter: 81818,
+    db: db,
+  });
   println!("Listening on http://{}", addr);
 
   server.await?;
   Ok(())
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct GraphReq {
+  vx_vec: Vec<u32>,
+  bl_min: u32,
+  bl_max: u32,
+  flux_threshold: u64,
+}
 struct Svc {
   counter: Counter,
+  db: Arc<Db>,
 }
 
 impl Service<Request<Body>> for Svc {
@@ -37,26 +61,39 @@ impl Service<Request<Body>> for Svc {
     }
 
     let res = match req.uri().path() {
-      "/" => mk_response(format!("home! counter = {:?}", self.counter)),
-      "/posts" => mk_response(format!("posts, of course! counter = {:?}", self.counter)),
-      "/authors" => mk_response(format!(
-        "authors extraordinare! counter = {:?}",
-        self.counter
-      )),
+      "/graph" => {
+        let mut db = self.db.clone();
+        return Box::pin(async move {
+          let bytes = hyper::body::to_bytes(req.into_body()).await.unwrap();
+          let graph_req: GraphReq = serde_json::from_slice(&bytes).unwrap();
+          println!("{:?}", graph_req);
+          //let res = task::spawn_blocking(move || {
+          //let graph = Arc::downgrade(&self.db);
+          let graph = Arc::get_mut(&mut db)
+            .unwrap()
+            .create_graph_adapter()
+            .unwrap();
+          let edges = graph
+            .edges(
+              graph_req.vx_vec,
+              graph_req.bl_min,
+              graph_req.bl_max,
+              graph_req.flux_threshold,
+              2,
+            )
+            .unwrap();
+          mk_response(serde_json::to_string(&edges).unwrap())
+        });
+      }
       // Return the 404 Not Found for other routes, and don't increment counter.
       _ => return Box::pin(async { mk_response("oh no! not found".into()) }),
     };
-
-    if req.uri().path() != "/favicon.ico" {
-      self.counter += 1;
-    }
-
-    Box::pin(async { res })
   }
 }
 
 struct MakeSvc {
   counter: Counter,
+  db: Arc<Db>,
 }
 
 impl<T> Service<T> for MakeSvc {
@@ -69,8 +106,11 @@ impl<T> Service<T> for MakeSvc {
   }
 
   fn call(&mut self, _: T) -> Self::Future {
-    let counter = self.counter.clone();
-    let fut = async move { Ok(Svc { counter }) };
+    //let counter = self.counter.clone();
+    let counter = 0;
+    dbg!("hi");
+    let db = self.db.clone();
+    let fut = async move { Ok(Svc { counter, db }) };
     Box::pin(fut)
   }
 }

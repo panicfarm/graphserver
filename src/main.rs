@@ -15,7 +15,7 @@ use {
 
 type Counter = i32;
 
-#[tokio::main]
+#[tokio::main(core_threads = 2, max_threads = 4)]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
   let addr = ([208, 93, 231, 240], 3001).into();
 
@@ -66,7 +66,12 @@ impl Service<Request<Body>> for Svc {
         return Box::pin(async move {
           let bytes = hyper::body::to_bytes(req.into_body()).await.unwrap();
           let graph_req: GraphReq = serde_json::from_slice(&bytes).unwrap();
-          println!("{:?} \n Strong count {}", graph_req, Arc::strong_count(&db));
+          println!("{:?}", graph_req);
+          println!(
+            "{:?}\n Strong count {}",
+            std::thread::current(),
+            Arc::strong_count(&db)
+          );
           //let res = task::spawn_blocking(move || {
           let graph = db.create_graph_adapter().unwrap();
           let edges = graph
@@ -81,8 +86,11 @@ impl Service<Request<Body>> for Svc {
           mk_response(serde_json::to_string(&edges).unwrap())
         });
       }
-      // Return the 404 Not Found for other routes, and don't increment counter.
-      _ => return Box::pin(async { mk_response("oh no! not found".into()) }),
+      _ => {
+        return Box::pin(async {
+          mk_response(String::from_utf8_lossy(include_bytes!("../files/index.html")).to_string())
+        })
+      }
     };
   }
 }

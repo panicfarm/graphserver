@@ -62,17 +62,13 @@ impl Service<Request<Body>> for Svc {
 
     let res = match req.uri().path() {
       "/graph" => {
-        let mut db = self.db.clone();
+        let db = self.db.clone();
         return Box::pin(async move {
           let bytes = hyper::body::to_bytes(req.into_body()).await.unwrap();
           let graph_req: GraphReq = serde_json::from_slice(&bytes).unwrap();
-          println!("{:?}", graph_req);
+          println!("{:?} \n Strong count {}", graph_req, Arc::strong_count(&db));
           //let res = task::spawn_blocking(move || {
-          //let graph = Arc::downgrade(&self.db);
-          let graph = Arc::get_mut(&mut db)
-            .unwrap()
-            .create_graph_adapter()
-            .unwrap();
+          let graph = db.create_graph_adapter().unwrap();
           let edges = graph
             .edges(
               graph_req.vx_vec,
@@ -109,7 +105,9 @@ impl<T> Service<T> for MakeSvc {
     //let counter = self.counter.clone();
     let counter = 0;
     dbg!("hi");
+    dbg!(Arc::strong_count(&self.db));
     let db = self.db.clone();
+    dbg!(Arc::strong_count(&self.db));
     let fut = async move { Ok(Svc { counter, db }) };
     Box::pin(fut)
   }
